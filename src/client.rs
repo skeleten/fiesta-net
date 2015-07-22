@@ -89,9 +89,9 @@ impl FiestaNetworkClient {
 			Ok(small_size as u16)
 		} else {
 			let mut big_size = try!(guard.peek_u16(1));
-			if big_size > BUFFERSIZE as u16 {
+			/* if big_size > BUFFERSIZE as u16 {
 				big_size = BUFFERSIZE as u16;
-			};
+			}; */
 			Ok(big_size)
 		}
 	}
