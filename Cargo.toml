@@ -1,0 +1,9 @@
+[package]
+name = "fiesta-net"
+version = "0.1.0"
+authors = ["skeleten"]
+
+[dependencies]
+mio = "0.4"
+log = "0.3"
+chan = "0.1"
