@@ -2,7 +2,7 @@ use std::io::{Error, ErrorKind, Write};
 use mio::buf::*;
 
 /* buffer of clients */
-pub const BUFFERSIZE: usize = 65000;
+pub const BUFFERSIZE: usize = 4 * 1024;		/* 4 KB should be plenty */
 
 pub trait BinaryReadable {
 	fn read_bytes(&mut self, size: usize) -> Result<Vec<u8>, Error>;
@@ -166,14 +166,21 @@ pub trait BinaryPeekable {
 }
 
 pub struct Buffer {
-	buffer:			RingBuf,
+	buffer:			Box<RingBuf>,
 	remaining:		usize,
 }
 
 impl Buffer {
 	pub fn new() -> Self {
 		Buffer {
-			buffer:		RingBuf::new(BUFFERSIZE),
+			buffer:		Box::new(RingBuf::new(BUFFERSIZE)),
+			remaining:	0,
+		}
+	}
+
+	pub fn with_capacity(capacity: usize) -> Self {
+		Buffer {
+			buffer:		Box::new(RingBuf::new(capacity)),
 			remaining:	0,
 		}
 	}

@@ -82,11 +82,11 @@ impl FiestaNetworkClient {
 			packet_queue: &mut MutexGuard<LinkedList<FiestaPacket>>) {
 
 		if FiestaNetworkClient::can_read_next_packet_inner(read_buffer) {
-			let mut packet = FiestaPacket::new(0);
 			let size = match FiestaNetworkClient::get_next_size_inner(read_buffer) {
 				Ok(s) => s,
 				Err(_) => return,
 			};
+			let mut packet = FiestaPacket::new(0, size as usize);
 
 			if size > 255 {
 				read_buffer.advance_read(3);
@@ -116,7 +116,7 @@ impl FiestaNetworkClient {
 			} else {
 				let mut big_size = try!(guard.peek_u16(1));
 
-				if (big_size as usize) > 1600 {
+				if (big_size as usize) > 2048 {
 					/* this should never actually happen with real data */
 					/* casting 0 here will still let it read 5 bytes (size + header) */
 					big_size = 0;
@@ -128,11 +128,11 @@ impl FiestaNetworkClient {
 	}
 
 	pub fn readable(&self, event_loop: &mut EventLoop<FiestaHandler>, token: Token, disconnect: &mut bool) {
-		let mut buffer = [0; 10240];
+		let mut buffer = [0; 2048]; /* maybe not allocate this every time again? */
 		let mut inner_client_guard = self.client.lock().unwrap();
 		let mut read_buffer_guard = self.read_buffer.lock().unwrap();
 
-		match inner_client_guard.read(&mut buffer) {
+		match inner_client_guard.read(&mut buffer[..]) {
 			Ok(size) if size > 0 => {
 				/* read some data */
 				info!(target: "network", "read {} bytes from {:?}", size, token);
@@ -355,10 +355,10 @@ impl Handler for FiestaHandler {
 }
 
 impl FiestaPacket {
-	pub fn new(header: u16) -> Self {
+	pub fn new(header: u16, size: usize) -> Self {
 		FiestaPacket {
 			header:			header,
-			data:			Buffer::new(),
+			data:			Buffer::with_capacity(size),
 		}
 	}
 }

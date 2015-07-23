@@ -7,3 +7,4 @@ authors = ["skeleten"]
 mio = "0.4"
 log = "0.3"
 chan = "0.1"
+threadpool = "0.1"
