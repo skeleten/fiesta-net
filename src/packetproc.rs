@@ -5,24 +5,33 @@ use chan::{Receiver, Sender, async};
 use client::{FiestaNetworkClient, FiestaPacket};
 
 pub trait PacketProcessor: Send + 'static {
-	fn process_packet(&mut self, info: Box<PacketProcessingInfo>);
+	fn process_packet(&mut self, info: Arc<RwLock<Box<PacketProcessingInfo>>>);
 	fn clone(&self) -> Box<PacketProcessor>;
 }
 
 pub struct PacketProcessingThreadPool {
 	thread_handles:					Arc<RwLock<Vec<JoinHandle<()>>>>,
-	packet_receiver:				Receiver<Box<PacketProcessingInfo>>,
-	packet_sender:					Sender<Box<PacketProcessingInfo>>,
+	packet_receiver:				Receiver<Arc<RwLock<Box<PacketProcessingInfo>>>>,
+	packet_sender:					Sender<Arc<RwLock<Box<PacketProcessingInfo>>>>,
 	processor:						Box<PacketProcessor>,
 }
 
 pub struct PacketProcessingInfo {
-	pub packet:			FiestaPacket,
-	pub client:			Arc<RefCell<Box<FiestaNetworkClient>>>,
+	pub packet:			Arc<RwLock<FiestaPacket>>,
+	pub client:			Arc<RwLock<Box<FiestaNetworkClient>>>,
+}
+
+impl PacketProcessingInfo {
+	pub fn new(packet: FiestaPacket, client: Arc<RwLock<Box<FiestaNetworkClient>>>) -> Self {
+		PacketProcessingInfo {
+			packet:		Arc::new(RwLock::new(packet)),
+			client:		client.clone(),
+		}
+	}
 }
 
 // a test
-unsafe impl Send for PacketProcessingInfo { }
+// unsafe impl Send for PacketProcessingInfo { }
 
 impl PacketProcessingThreadPool {
 	pub fn new(threads: usize, processor: Box<PacketProcessor>) -> PacketProcessingThreadPool {
@@ -70,7 +79,7 @@ impl Clone for PacketProcessingThreadPool {
 } 
 
 impl PacketProcessor for PacketProcessingThreadPool {
-	fn process_packet(&mut self, info: Box<PacketProcessingInfo>) {
+	fn process_packet(&mut self, info: Arc<RwLock<Box<PacketProcessingInfo>>>) {
 		self.packet_sender.send(info);
 	}
 

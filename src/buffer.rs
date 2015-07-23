@@ -2,7 +2,7 @@ use std::io::{Error, ErrorKind, Write};
 use mio::buf::*;
 
 /* buffer of clients */
-pub const BUFFERSIZE: usize = 4096;
+pub const BUFFERSIZE: usize = 65000;
 
 pub trait BinaryReadable {
 	fn read_bytes(&mut self, size: usize) -> Result<Vec<u8>, Error>;
@@ -187,6 +187,7 @@ impl Buffer {
 		self.remaining += bytes.len();
 		if self.remaining > BUFFERSIZE {
 			// panic!("overwritten some data!!");
+			warn!(target: "networking", "overwritten some data.");
 			self.remaining = BUFFERSIZE;
 		}
 	}
@@ -207,7 +208,7 @@ impl Buffer {
 
 impl BinaryReadable for Buffer {
 	fn read_bytes(&mut self, size: usize) -> Result<Vec<u8>, Error> {
-		if <RingBuf as Buf>::remaining(&self.buffer) < size {
+		if self.bytes_remaining() < size {
 			Err(Error::new(ErrorKind::InvalidData, "Not enough data"))
 		} else {
 			let mut buf = vec![0; size];

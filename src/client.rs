@@ -1,7 +1,7 @@
 use std::collections::{HashMap, LinkedList};
-use std::io::{Error, Read, Write};
+use std::io::{Error, ErrorKind, Read, Write};
 use std::cell::RefCell;
-use std::sync::{Mutex, Arc};
+use std::sync::{Mutex, Arc, RwLock};
 use mio::*;
 use mio::tcp::*;
 
@@ -12,7 +12,7 @@ pub const SERVER_TOKEN: Token = Token(0);
 
 pub struct FiestaHandler {
 	listener:		TcpListener,
-	clients:		HashMap<Token, Arc<RefCell<Box<FiestaNetworkClient>>>>,
+	clients:		HashMap<Token, Arc<RwLock<Box<FiestaNetworkClient>>>>,
 	token_count:	usize,
 	processor:		Box<PacketProcessor>,
 }
@@ -83,15 +83,20 @@ impl FiestaNetworkClient {
 	fn get_next_size(&self) -> Result<u16, Error> {
 		/* we don't actually advance the size here.. therefore peek */
 		let mut guard = self.read_buffer.lock().unwrap();
-
+		if guard.bytes_remaining() < 3 {
+			return Err(Error::new(ErrorKind::Other, "to few bytes remaining"));
+		};
 		let small_size = try!(guard.peek_u8(0));
 		if small_size > 0 {
 			Ok(small_size as u16)
 		} else {
 			let mut big_size = try!(guard.peek_u16(1));
-			/* if big_size > BUFFERSIZE as u16 {
-				big_size = BUFFERSIZE as u16;
-			}; */
+			if (big_size as usize) > BUFFERSIZE {
+				/* this should never happen, but what *if* it does? */
+				/* guess it'll be 0 for now, testing purposes. */
+				/* IRL the buffer needs to be large enough though... */
+				big_size = 0;
+			};
 			Ok(big_size)
 		}
 	}
@@ -234,7 +239,7 @@ impl FiestaHandler {
 					self.clients.insert(
 						token, 
 						Arc::new(
-							RefCell::new(
+							RwLock::new(
 								Box::new(
 									FiestaNetworkClient::new(client, token)))));
 					info!(target: "network", "accepted client with {:?}", token);
@@ -266,22 +271,25 @@ impl FiestaHandler {
 
 		if events.is_readable() {
 			let client = self.clients.get(&token).unwrap();
-			let client_guard = client.borrow();
+			let client_guard = client.read().unwrap();
 			client_guard.readable(event_loop, token, &mut client_disconnect);
 
 			let mut packet_queue_guard = client_guard.packet_queue.lock().unwrap();
 			while !packet_queue_guard.is_empty() {
-				let packet = packet_queue_guard.pop_front();
-				packets_to_process.push(Box::new(PacketProcessingInfo {
-					packet:			packet.unwrap(),
-					client:			client.clone(),
-				}));
+				let packet = packet_queue_guard.pop_front().unwrap();
+				packets_to_process.push(
+					Arc::new(
+						RwLock::new(
+							Box::new(
+								PacketProcessingInfo::new(
+									packet,
+									client.clone())))));
 			}
 		}
 
 		if events.is_writable() {
 			let client = self.clients.get_mut(&token).unwrap();
-			let guard = client.borrow();
+			let guard = client.read().unwrap();
 			guard.writeable(event_loop, token, &mut client_disconnect);
 		}
 
@@ -296,7 +304,7 @@ impl FiestaHandler {
 		} else {
 			/* re-register */
 			let client = self.clients.get(&token).unwrap();
-			let client_borrow = client.borrow();
+			let client_borrow = client.read().unwrap();
 			let inner_client_guard = client_borrow.client.lock().unwrap();
 			let interest = client_borrow.interest();
 			event_loop.reregister(&*inner_client_guard, token, interest, PollOpt::oneshot()).unwrap();
