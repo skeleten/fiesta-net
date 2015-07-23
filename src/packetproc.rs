@@ -1,6 +1,5 @@
 use std::thread::{JoinHandle, Builder};
 use std::sync::{Arc, RwLock};
-use std::cell::RefCell;
 use chan::{Receiver, Sender, async};
 use client::{FiestaNetworkClient, FiestaPacket};
 

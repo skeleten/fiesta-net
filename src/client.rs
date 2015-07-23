@@ -1,7 +1,7 @@
 use std::collections::{HashMap, LinkedList};
 use std::io::{Error, ErrorKind, Read, Write};
-use std::cell::RefCell;
-use std::sync::{Mutex, Arc, RwLock};
+use std::sync::{Mutex, Arc, RwLock, MutexGuard};
+use std::mem::drop;
 use mio::*;
 use mio::tcp::*;
 
@@ -56,88 +56,116 @@ impl FiestaNetworkClient {
 		}
 	}
 
-	pub fn read_next_packet(&self) {
-		if !self.can_read_next_packet() {
-			return;
+	fn can_read_next_packet_inner(guard: &mut MutexGuard<Buffer>) -> bool {
+		match FiestaNetworkClient::get_next_size_inner(guard) {
+			Ok(s) => {
+				let total_size =
+						s
+					+	2	/* header */
+					+	if s > 255 { 2 } else { 1 };	/* size data */
+
+				s >= total_size
+			},
+			Err(_) => false,
 		}
+	}
 
-		let mut packet = FiestaPacket {
-			header:			0,
-			data:			Buffer::new()
-		};
-		let size = self.get_next_size().unwrap() as usize;
-		let mut guard = self.read_buffer.lock().unwrap();
-		if size > 255 {
-			guard.advance_read(3);
-		} else {
-			guard.advance_read(1);
-		};
-		packet.header = guard.read_u16().unwrap();
-		let body = guard.read_bytes(size).unwrap();
-		packet.data.append(&body[..]);
-
+	pub fn read_next_packet(&self) {
+		let mut read_buffer_guard = self.read_buffer.lock().unwrap();
 		let mut packet_queue_guard = self.packet_queue.lock().unwrap();
-		packet_queue_guard.push_back(packet);
+
+		FiestaNetworkClient::read_next_packet_inner(&mut read_buffer_guard, &mut packet_queue_guard);
+	}
+
+	fn read_next_packet_inner(
+			read_buffer: &mut MutexGuard<Buffer>, 
+			packet_queue: &mut MutexGuard<LinkedList<FiestaPacket>>) {
+
+		if FiestaNetworkClient::can_read_next_packet_inner(read_buffer) {
+			let mut packet = FiestaPacket::new(0);
+			let size = match FiestaNetworkClient::get_next_size_inner(read_buffer) {
+				Ok(s) => s,
+				Err(_) => return,
+			};
+
+			if size > 255 {
+				read_buffer.advance_read(3);
+			} else {
+				read_buffer.advance_read(1);
+			};
+
+			packet.header = read_buffer.read_u16().unwrap();
+			let body = read_buffer.read_bytes(size as usize).unwrap();
+			packet.data.append(&body[..]);
+
+			packet_queue.push_back(packet);
+		}
 	}
 
 	fn get_next_size(&self) -> Result<u16, Error> {
-		/* we don't actually advance the size here.. therefore peek */
 		let mut guard = self.read_buffer.lock().unwrap();
+		FiestaNetworkClient::get_next_size_inner(&mut guard)
+	}
+
+	fn get_next_size_inner(guard: &mut MutexGuard<Buffer>) -> Result<u16, Error> {
 		if guard.bytes_remaining() < 3 {
-			return Err(Error::new(ErrorKind::Other, "to few bytes remaining"));
-		};
-		let small_size = try!(guard.peek_u8(0));
-		if small_size > 0 {
-			Ok(small_size as u16)
+			Err(Error::new(ErrorKind::Other, "to little data left"))
 		} else {
-			let mut big_size = try!(guard.peek_u16(1));
-			if (big_size as usize) > BUFFERSIZE {
-				/* this should never happen, but what *if* it does? */
-				/* guess it'll be 0 for now, testing purposes. */
-				/* IRL the buffer needs to be large enough though... */
-				big_size = 0;
-			};
-			Ok(big_size)
+			let small_size = try!(guard.peek_u8(0));
+			if small_size > 0 {
+				Ok(small_size as u16)
+			} else {
+				let mut big_size = try!(guard.peek_u16(1));
+
+				if (big_size as usize) > BUFFERSIZE {
+					/* this should never actually happen with real data */
+					/* casting 0 here will still let it read 5 bytes (size + header) */
+					big_size = 0;
+				};
+
+				Ok(big_size)
+			}
 		}
 	}
 
 	pub fn readable(&self, event_loop: &mut EventLoop<FiestaHandler>, token: Token, disconnect: &mut bool) {
-		{	/* extra scope, to let the life times be as low as possible here */
-			/* I prefer it over an explicit std::mem::drop call. */
-			let mut buffer = [0; 1024];
-			let mut inner_client_guard = self.client.lock().unwrap();
+		let mut buffer = [0; 10240];
+		let mut inner_client_guard = self.client.lock().unwrap();
+		let mut read_buffer_guard = self.read_buffer.lock().unwrap();
+		let mut packet_queue_guard = self.packet_queue.lock().unwrap();
 
-			match inner_client_guard.read(&mut buffer) {
-				Ok(size) if size > 0 => {
-					/* read some data */
-					// info!(target: "network", "read {} bytes from {:?}", size, token);
-					let mut read_buffer_guard = self.read_buffer.lock().unwrap();
-					read_buffer_guard.append(&buffer[0..size]);
-				},
-				Ok(_) => {
-					/* size == 0 */
-					debug!(target: "network", "read 0 bytes from {:?}", self.id());
-					/* this usually means a disconect */
-					/* no need to deregister, we use oneshot. */
-					// event_loop.deregister(&*inner_client_guard).unwrap();
-					inner_client_guard.shutdown(Shutdown::Both).unwrap();
-					self.set_alive(false);
-					*disconnect = true;
-				},
-				Err(e) => {
-					/* some error while receiving data.. */
-					warn!(target: "network", "error while receiving data: '{:#?}'", e);
-					/* no need to deregister, we use oneshot. */
-					// event_loop.deregister(&*inner_client_guard);
-					inner_client_guard.shutdown(Shutdown::Both).unwrap();
-					self.set_alive(false);
-					*disconnect = true;
-				}
+		match inner_client_guard.read(&mut buffer) {
+			Ok(size) if size > 0 => {
+				/* read some data */
+				// info!(target: "network", "read {} bytes from {:?}", size, token);
+				read_buffer_guard.append(&buffer[0..size]);
+			},
+			Ok(_) => {
+				/* size == 0 */
+				debug!(target: "network", "read 0 bytes from {:?}", self.id());
+				/* this usually means a disconect */
+				/* no need to deregister, we use oneshot. */
+				// event_loop.deregister(&*inner_client_guard).unwrap();
+				inner_client_guard.shutdown(Shutdown::Both).unwrap();
+				self.set_alive(false);
+				*disconnect = true;
+			},
+			Err(e) => {
+				/* some error while receiving data.. */
+				warn!(target: "network", "error while receiving data: '{:#?}'", e);
+				/* no need to deregister, we use oneshot. */
+				// event_loop.deregister(&*inner_client_guard);
+				inner_client_guard.shutdown(Shutdown::Both).unwrap();
+				self.set_alive(false);
+				*disconnect = true;
 			}
 		}
+
+		/* this is no longer needed, as it is a mutex, I like to drop it ASAP */
+		drop(inner_client_guard);
 		
-		while self.can_read_next_packet() {
-			self.read_next_packet();
+		while FiestaNetworkClient::can_read_next_packet_inner(&mut read_buffer_guard) {
+			FiestaNetworkClient::read_next_packet_inner(&mut read_buffer_guard, &mut packet_queue_guard);
 		}
 	}
 
