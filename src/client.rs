@@ -64,7 +64,7 @@ impl FiestaNetworkClient {
 					+	2	/* header */
 					+	if s > 255 { 2 } else { 1 };	/* size data */
 
-				s >= total_size
+				guard.bytes_remaining() >= total_size as usize
 			},
 			Err(_) => false,
 		}
@@ -97,7 +97,6 @@ impl FiestaNetworkClient {
 			packet.header = read_buffer.read_u16().unwrap();
 			let body = read_buffer.read_bytes(size as usize).unwrap();
 			packet.data.append(&body[..]);
-
 			packet_queue.push_back(packet);
 		}
 	}
@@ -117,7 +116,7 @@ impl FiestaNetworkClient {
 			} else {
 				let mut big_size = try!(guard.peek_u16(1));
 
-				if (big_size as usize) > BUFFERSIZE {
+				if (big_size as usize) > 1600 {
 					/* this should never actually happen with real data */
 					/* casting 0 here will still let it read 5 bytes (size + header) */
 					big_size = 0;
@@ -132,12 +131,11 @@ impl FiestaNetworkClient {
 		let mut buffer = [0; 10240];
 		let mut inner_client_guard = self.client.lock().unwrap();
 		let mut read_buffer_guard = self.read_buffer.lock().unwrap();
-		let mut packet_queue_guard = self.packet_queue.lock().unwrap();
 
 		match inner_client_guard.read(&mut buffer) {
 			Ok(size) if size > 0 => {
 				/* read some data */
-				// info!(target: "network", "read {} bytes from {:?}", size, token);
+				info!(target: "network", "read {} bytes from {:?}", size, token);
 				read_buffer_guard.append(&buffer[0..size]);
 			},
 			Ok(_) => {
@@ -164,6 +162,7 @@ impl FiestaNetworkClient {
 		/* this is no longer needed, as it is a mutex, I like to drop it ASAP */
 		drop(inner_client_guard);
 		
+		let mut packet_queue_guard = self.packet_queue.lock().unwrap();
 		while FiestaNetworkClient::can_read_next_packet_inner(&mut read_buffer_guard) {
 			FiestaNetworkClient::read_next_packet_inner(&mut read_buffer_guard, &mut packet_queue_guard);
 		}
@@ -201,6 +200,9 @@ impl FiestaNetworkClient {
 			Ok(_)	=> {
 				/* read 0 bytes from send buffer..  */
 				/* TODO: we might want to unregister it from the loop until new data arrives */
+				let interest = self.interest();
+				let interest = interest ^ EventSet::writable();
+				self.set_interest(interest);
 			},
 			Err(e)		=> {
 				warn!(target: "network", "error while reading from write_buffer ({:?}): {:#?}", token, e);
