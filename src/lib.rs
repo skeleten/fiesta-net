@@ -10,11 +10,7 @@ extern crate threadpool;
 
 mod buffer;
 mod client;
-mod packetproc;
-
-pub use buffer::*;
-pub use packetproc::*;
-pub use client::*;
+mod processing;
 
 #[test]
 fn it_works() {
