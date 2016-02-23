@@ -1,6 +1,6 @@
 // TMP
 mod packetproc;
-mod traits;
+pub mod traits;
 
 
 
